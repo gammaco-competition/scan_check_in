@@ -4,7 +4,7 @@
   <base target="_top">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-  <title>Team QR Scanner</title>
+  <title>Registration QR Scan</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
@@ -131,7 +131,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>📷 Team QR Scanner</h1>
+    <h1>📷 Registration QR Scan</h1>
     <span class="chip" id="modeChip">…</span>
   </header>
 
@@ -143,7 +143,7 @@
       <video id="video" playsinline muted autoplay></video>
       <div class="frame" id="frame" style="display:none"></div>
       <div class="hint" id="hint" style="display:none">เล็ง QR ให้อยู่ในกรอบ</div>
-      <div class="idle" id="idle"><b>▢</b>กด "เปิดกล้อง" เพื่อสแกนสด<br>หรือ "ถ่ายรูป QR" ถ้ากล้องสดใช้ไม่ได้</div>
+      <div class="idle" id="idle"><b>▢</b>กด "เปิดกล้อง" เพื่อสแกน<br>หรือ "ถ่ายรูป QR" ถ้ากล้องใช้ไม่ได้</div>
       <div class="tools" id="tools" style="display:none">
         <button id="torchBtn" title="ไฟฉาย" style="display:none">🔦</button>
         <button id="stopBtn" title="ปิดกล้อง">✕</button>
