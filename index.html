@@ -4,7 +4,7 @@
   <base target="_top">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-  <title>QR Scanner</title>
+  <title>Team QR Scanner</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
@@ -62,6 +62,15 @@
     table.f{width:100%;border-collapse:collapse;font-size:15px}
     table.f td{padding:8px 4px;border-bottom:1px solid var(--line);vertical-align:top}
     table.f td:first-child{color:var(--muted);width:38%}
+    .tname{font-size:16px;font-weight:600;color:#334155;margin:-4px 0 6px}
+    .sec{margin-top:12px}
+    .sec h4{font-size:14px;margin:0 0 4px;color:var(--brand);display:flex;align-items:center;gap:6px}
+    .sec h4 .cnt{background:#dbeafe;color:#1d4ed8;border-radius:99px;padding:1px 8px;font-size:12px}
+    .mem{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;border-left:5px solid var(--c,#2563eb)}
+    .mem .tag{display:inline-block;font-size:12px;font-weight:600;color:#fff;background:var(--c,#2563eb);border-radius:99px;padding:1px 9px;margin-right:6px}
+    .mem .nm{font-weight:600;font-size:16px}
+    .mem .sub{font-size:13px;color:var(--muted);margin-top:4px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px}
+    .empty{font-size:14px;color:var(--muted);padding:6px 0}
     .spin{width:22px;height:22px;border:3px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sp 0.8s linear infinite}
     @keyframes sp{to{transform:rotate(360deg)}}
 
@@ -77,7 +86,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>📷 QR Scanner</h1>
+    <h1>📷 Team QR Scanner</h1>
     <span class="chip" id="modeChip">…</span>
   </header>
 
@@ -101,17 +110,18 @@
     </div>
     <input type="file" id="photoInput" accept="image/*" capture="environment">
     <div class="manual">
-      <input id="manualInput" placeholder="หรือพิมพ์รหัส แล้วกดค้นหา" autocomplete="off" enterkeyhint="search">
+      <input id="manualInput" placeholder="หรือพิมพ์ Team ID แล้วกดค้นหา" autocomplete="off" enterkeyhint="search">
       <button class="b b-light" id="manualBtn">ค้นหา</button>
     </div>
-    <label class="opt"><input type="checkbox" id="autoChk"> เช็คอินอัตโนมัติทันทีที่สแกนเจอ</label>
+    <label class="opt" id="autoOpt" style="display:none"><input type="checkbox" id="autoChk"> เช็คอินอัตโนมัติทันทีที่สแกนเจอ</label>
   </div>
 
   <!-- ผลลัพธ์ -->
   <div class="card" id="result">
     <div class="status s-load" id="status"></div>
     <div class="idbig" id="resId"></div>
-    <table class="f" id="fields"></table>
+    <div class="tname" id="resName"></div>
+    <div id="resBody"></div>
     <div class="btns" id="actions"></div>
   </div>
 
@@ -127,7 +137,7 @@
 /* =================== ตั้งค่า =================== */
 // ใช้เฉพาะตอนวางไฟล์นี้บน GitHub Pages: ใส่ URL /exec ของ Web App
 // (ถ้าเปิดผ่าน Apps Script โดยตรง ไม่ต้องใส่)
-const API_URL = 'https://script.google.com/macros/s/AKfycbySMkoP-XzEVVpzz2dgcGEh_UKDE5BJYCXuUAeU_u9eFmMqpAeEcjiSL5CWLxvZRZdS/exec';
+const API_URL = '';
 const API_TIMEOUT_MS = 30000;
 const SAME_CODE_COOLDOWN_MS = 4000;   // QR เดิมซ้ำภายในกี่ ms จะไม่อ่านซ้ำ
 /* ============================================== */
@@ -181,8 +191,18 @@ function api(payload) {
   $('manualInput').onkeydown = e => { if (e.key === 'Enter') $('manualBtn').click(); };
   renderHist();
   initDetector();
+  loadConfig();
   document.addEventListener('visibilitychange', () => { if (document.hidden && stream) stopCamera(); });
 })();
+
+let CHECKIN_ENABLED = false;
+async function loadConfig() {
+  try {
+    const c = await api({ action: 'config' });
+    CHECKIN_ENABLED = !!(c && c.checkin);
+    $('autoOpt').style.display = CHECKIN_ENABLED ? '' : 'none';
+  } catch (e) {}
+}
 
 async function initDetector() {
   try {
@@ -318,7 +338,7 @@ async function onPhoto(e) {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
   setStatus('load', 'กำลังอ่าน QR จากรูป…');
-  showResult('', []);
+  showResult('', null);
   try {
     const img = await loadImage(file);
     const text = await decodeImage(img);
@@ -379,9 +399,9 @@ async function handleCode(raw) {
   const id = extractId(raw);
   if (!id) return;
   current = { id };
-  showResult(id, []);
-  const auto = $('autoChk').checked;
-  setStatus('load', auto ? 'กำลังเช็คอิน…' : 'กำลังค้นหาข้อมูล…');
+  showResult(id, null);
+  const auto = CHECKIN_ENABLED && $('autoChk').checked;
+  setStatus('load', auto ? 'กำลังเช็คอิน…' : 'กำลังดึงข้อมูลทีม…');
   setActions([]);
   $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   try {
@@ -413,14 +433,20 @@ function renderResult(res, wasCheckin) {
     return;
   }
   current = res;
-  showResult(res.id, res.fields || []);
+  showResult(res.id, res);
   if (!res.found) {
-    setStatus('bad', 'ไม่พบข้อมูล', 'รหัสนี้ไม่มีในระบบ');
+    setStatus('bad', 'ไม่พบทีม', 'ไม่มี Team ID นี้ในชีต Team Data');
     addHist(res.id, 'ไม่พบ');
     setActions([['📷 สแกนต่อ', 'b-primary full', scanNext]]);
     return;
   }
   const scanBtn = ['📷 สแกนต่อ', 'b-light', scanNext];
+  if (!res.checkin) {               // โหมดแสดงข้อมูลอย่างเดียว
+    setStatus('ok', 'พบข้อมูลทีม', (res.members || []).length + ' สมาชิก');
+    addHist(res.id, res.teamName || 'ดูข้อมูล');
+    setActions([['📷 สแกนทีมถัดไป', 'b-primary full', scanNext]]);
+    return;
+  }
   if (res.duplicate) {
     setStatus('warn', 'เคยเช็คอินแล้ว', 'เมื่อ ' + res.checkedAt);
     addHist(res.id, 'ซ้ำ');
@@ -449,10 +475,35 @@ function scanNext() {
 /* ---------- UI helpers ---------- */
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-function showResult(id, fields) {
+const TAG_COLORS = ['#2563eb', '#16a34a', '#d97706', '#9333ea', '#db2777', '#0891b2', '#65a30d', '#dc2626', '#4f46e5', '#0d9488'];
+
+function rows(list) {
+  return '<table class="f">' + (list || []).map(f => `<tr><td>${esc(f.label)}</td><td>${esc(f.value) || '-'}</td></tr>`).join('') + '</table>';
+}
+
+/** res = null → ล้างข้อมูล (ระหว่างโหลด) */
+function showResult(id, res) {
   $('result').style.display = 'block';
   $('resId').textContent = id || '';
-  $('fields').innerHTML = (fields || []).map(f => `<tr><td>${esc(f.label)}</td><td>${esc(f.value) || '-'}</td></tr>`).join('');
+  $('resName').textContent = (res && res.teamName) || '';
+  if (!res || !res.found) { $('resBody').innerHTML = ''; return; }
+  let html = `<div class="sec"><h4>🏷️ ข้อมูลทีม</h4>${rows(res.team)}</div>`;
+  if (res.contact && res.contact.length) html += `<div class="sec"><h4>👤 ผู้ควบคุมทีม</h4>${rows(res.contact)}</div>`;
+  const ms = res.members || [];
+  html += `<div class="sec"><h4>👥 สมาชิก <span class="cnt">${ms.length} คน</span></h4>`;
+  if (!res.memberSheetFound) html += '<div class="empty">ไม่พบ Team ID นี้ในชีต Team Member</div>';
+  else if (!ms.length) html += '<div class="empty">ยังไม่มีรายชื่อสมาชิก</div>';
+  ms.forEach((m, i) => {
+    const sub = [];
+    if (m.dob) sub.push(['วันเกิด', m.dob]);
+    if (m.idType || m.idNum) sub.push([m.idType || 'ID', m.idNum || '-']);
+    html += `<div class="mem" style="--c:${TAG_COLORS[i % TAG_COLORS.length]}">
+      <span class="tag">No.${esc(m.n)}</span><span class="nm">${esc(m.name)}</span>
+      ${sub.length ? `<div class="sub">${sub.map(([a, b]) => `<span>${esc(a)}</span><span>${esc(b)}</span>`).join('')}</div>` : ''}
+    </div>`;
+  });
+  html += '</div>';
+  $('resBody').innerHTML = html;
 }
 
 function setStatus(type, title, sub) {
