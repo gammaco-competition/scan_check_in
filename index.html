@@ -566,19 +566,14 @@ function ckArea(m, isNew) {
 function memberCard(m, i, isNew) {
   const info = (current && current.slotInfo) || {};
   const locked = !!m.checkedAt;
-  const typeOpts = ['<option value="">- เลือก -</option>']
-    .concat(ID_TYPES.map(t => `<option ${t === m.idType ? 'selected' : ''}>${esc(t)}</option>`));
-  if (m.idType && ID_TYPES.indexOf(m.idType) < 0) typeOpts.push(`<option selected>${esc(m.idType)}</option>`);
   return `<div class="mem" data-n="${m.n}" ${isNew ? 'data-new="1"' : ''} style="--c:${TAG_COLORS[i % TAG_COLORS.length]}">
     <div class="top"><span class="tag">No.${m.n}</span><span class="ckarea">${ckArea(m, isNew)}</span></div>
     <label>ชื่อ-นามสกุล ${locked ? '<span class="lock">🔒 เช็คอินแล้ว แก้ชื่อไม่ได้</span>' : ''}</label>
     <input data-f="name" value="${esc(m.name)}" maxlength="150" ${locked ? 'readonly' : ''} placeholder="ชื่อ-นามสกุล">
     ${info.hasDob ? `<label>วันเกิด</label>
       <input type="date" data-f="dob" value="${toIso(m.dob)}" max="${todayIso()}" min="1950-01-01">` : ''}
-    ${info.hasIdType || info.hasIdNum ? `<div class="two">
-      ${info.hasIdType ? `<div><label>ประเภทบัตร</label><select data-f="idType">${typeOpts.join('')}</select></div>` : ''}
-      ${info.hasIdNum ? `<div><label>เลขบัตร</label><input data-f="idNum" value="${esc(m.idNum)}" maxlength="20" autocapitalize="characters"></div>` : ''}
-    </div>` : ''}
+    ${info.hasIdNum ? `<label>เลขบัตร</label>
+      <input data-f="idNum" value="${esc(m.idNum)}" maxlength="20" autocapitalize="characters">` : ''}
     ${locked ? '' : `<button class="rm" data-rm="${m.n}" type="button">🗑 ลบสมาชิกคนนี้</button>`}
   </div>`;
 }
@@ -633,7 +628,7 @@ function addMember() {
   freeSlots.sort((a, b) => a - b);
   const n = freeSlots.shift();
   const list = $('memList');
-  list.insertAdjacentHTML('beforeend', memberCard({ n, name: '', dob: '', idType: ID_TYPES[0] || '', idNum: '' }, list.children.length, true));
+  list.insertAdjacentHTML('beforeend', memberCard({ n, name: '', dob: '', idNum: '' }, list.children.length, true));
   const card = list.lastElementChild;
   card.classList.add('dirty');
   if ($('noMem')) $('noMem').remove();
@@ -668,7 +663,7 @@ function collectMembers() {
     const n = Number(card.dataset.n);
     const get = f => { const el = card.querySelector(`[data-f=${f}]`); return el ? el.value.trim() : undefined; };
     if (card.classList.contains('removed')) { out.push({ n, name: '', dob: '', idType: '', idNum: '' }); return; }
-    const m = { n, name: get('name'), dob: get('dob'), idType: get('idType'), idNum: get('idNum') };
+    const m = { n, name: get('name'), dob: get('dob'), idNum: get('idNum') };   // ไม่ส่งประเภทบัตร = ไม่แก้ค่าเดิมในชีต
     if (card.dataset.new && !m.name && !m.dob && !m.idNum) return;   // ช่องใหม่ที่ไม่ได้กรอก ข้าม
     if (!m.name) errs.push(`No.${n}: กรุณาใส่ชื่อ`);
     out.push(m);
