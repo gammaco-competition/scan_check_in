@@ -81,6 +81,19 @@
     .ckdone{color:var(--ok);font-weight:600}
     .ckundo{border:0;background:none;color:var(--muted);text-decoration:underline;font-size:.9rem;cursor:pointer}
     .empty{color:var(--muted);padding:6px 0}
+    .mem label{display:block;font-size:.85rem;color:var(--muted);margin:8px 0 3px}
+    .mem input,.mem select{width:100%;border:1px solid #cbd5e1;border-radius:12px;padding:11px 12px;background:#fff;color:var(--ink);min-height:48px}
+    .mem input[readonly]{background:#f1f5f9;color:#334155;border-style:dashed}
+    .mem input[type=date]{-webkit-appearance:none;appearance:none;display:block}
+    .mem .two{display:grid;grid-template-columns:2fr 3fr;gap:8px}
+    .mem .top{justify-content:space-between}
+    .mem.removed{opacity:.45}
+    .mem.dirty{box-shadow:0 0 0 2px #fbbf24}
+    .lock{color:var(--warn);font-size:.8rem;margin-left:4px}
+    .rm{border:0;background:none;color:var(--bad);font-size:.9rem;cursor:pointer;margin-top:8px;padding:4px 0}
+    .savebar{position:sticky;bottom:calc(10px + env(safe-area-inset-bottom));display:none;grid-template-columns:1fr 2fr;gap:8px;margin-top:10px;
+             background:rgba(255,255,255,.95);padding:8px;border-radius:16px;box-shadow:0 6px 24px rgba(15,23,42,.18)}
+    .savebar.show{display:grid}
 
     /* ฟอร์มแก้ไข */
     .ed{border:1px dashed #94a3b8;border-radius:14px;padding:12px;margin-bottom:12px;border-left:6px solid var(--c,#2563eb)}
@@ -185,7 +198,7 @@ const wctx = work.getContext('2d', { willReadFrequently: true });
 let stream = null, scanning = false, busy = false, detector = null;
 let lastCode = '', lastCodeAt = 0, torchOn = false, rafId = 0, lastTick = 0, frameNo = 0;
 let current = null;          // ข้อมูลทีมที่แสดงอยู่
-let editing = false;
+let dirty = false;           // มีการแก้ไขที่ยังไม่บันทึก
 let ID_TYPES = ['ID No.', 'Pass No.'];
 let PIN = '';
 try { PIN = localStorage.getItem('qr_pin') || ''; } catch (e) {}
@@ -388,7 +401,7 @@ async function decodeVideoFrame() {
 function onDetected(text) {
   const now = Date.now();
   if (text === lastCode && now - lastCodeAt < SAME_CODE_COOLDOWN_MS) return;
-  if (editing && !confirm('กำลังแก้ไขข้อมูลอยู่ ต้องการทิ้งการแก้ไขแล้วเปิดทีมใหม่หรือไม่?')) return;
+  if (dirty && !confirm('ยังไม่ได้บันทึกการแก้ไข ต้องการทิ้งแล้วเปิดทีมใหม่หรือไม่?')) return;
   lastCode = text; lastCodeAt = now;
   $('frame').classList.add('hit');
   feedback();
@@ -400,7 +413,8 @@ function onDetected(text) {
 async function onPhoto(e) {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
-  editing = false;
+  if (dirty && !confirm('ยังไม่ได้บันทึกการแก้ไข ต้องการทิ้งหรือไม่?')) return;
+  dirty = false;
   showResultBox('', '');
   setStatus('load', 'กำลังอ่าน QR จากรูป…');
   try {
@@ -459,7 +473,7 @@ function extractId(raw) {
 async function handleCode(raw) {
   const id = extractId(raw);
   if (!id) return;
-  editing = false;
+  dirty = false;
   current = { id };
   const auto = $('autoChk').checked;
   showResultBox(id, '');
@@ -495,7 +509,7 @@ function render(res, mode) {
     return;
   }
   current = res;
-  editing = false;
+  dirty = false;
   showResultBox(res.id, res.teamName);
   const ms = res.members || [];
   const done = ms.filter(m => m.checkedAt).length;
@@ -503,7 +517,7 @@ function render(res, mode) {
     if (res.already) setStatus('warn', 'ทีมนี้เช็คอินครบแล้ว', `${done}/${ms.length} คน`);
     else setStatus('ok', 'เช็คอินทั้งทีมสำเร็จ ✓', `${done}/${ms.length} คน`);
     addHist(res.id, `เช็คอิน ${done}/${ms.length}`);
-    if (stream) setTimeout(() => { if (current === res && !editing) scanNext(); }, 1800);
+    if (stream) setTimeout(() => { if (current === res && !dirty) scanNext(); }, 1800);
   } else if (mode === 'saved') {
     setStatus('ok', 'บันทึกข้อมูลสมาชิกแล้ว ✓', res.changed ? `แก้ไข ${res.changed} ช่อง` : 'ไม่มีข้อมูลเปลี่ยนแปลง');
   } else if (mode !== 'keep') {
@@ -526,52 +540,185 @@ function teamHtml(res) {
   return h;
 }
 
-function maskId(s) {
-  s = String(s || '');
-  return s.length <= 4 ? s : s.slice(0, -4).replace(/[A-Za-z0-9]/g, '•') + s.slice(-4);
+/* ---------- สมาชิก: แสดงแบบพร้อมแก้ไขทันที ---------- */
+const pad2 = n => String(n).padStart(2, '0');
+const todayIso = () => { const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
+
+/** dd/mm/yyyy (หรือ yyyy-mm-dd, ปี พ.ศ.) → yyyy-mm-dd สำหรับช่องปฏิทิน */
+function toIso(s) {
+  s = String(s || '').trim();
+  const p = s.split(/[\/\-.]/);
+  if (p.length !== 3) return '';
+  let d, m, y;
+  if (p[0].length === 4) { y = +p[0]; m = +p[1]; d = +p[2]; } else { d = +p[0]; m = +p[1]; y = +p[2]; }
+  while (y > 2400) y -= 543;
+  if (!y || !m || !d) return '';
+  return y + '-' + pad2(m) + '-' + pad2(d);
+}
+
+function ckArea(m, isNew) {
+  if (isNew) return '<span class="muted">บันทึกก่อน จึงเช็คอินได้</span>';
+  return m.checkedAt
+    ? `<span class="ckdone">✅ ${esc(m.checkedAt)}</span> <button class="ckundo" data-undo="${m.n}" type="button">ยกเลิก</button>`
+    : `<button class="ckbtn" data-ck="${m.n}" type="button">✅ Check-in</button>`;
+}
+
+function memberCard(m, i, isNew) {
+  const info = (current && current.slotInfo) || {};
+  const locked = !!m.checkedAt;
+  const typeOpts = ['<option value="">- เลือก -</option>']
+    .concat(ID_TYPES.map(t => `<option ${t === m.idType ? 'selected' : ''}>${esc(t)}</option>`));
+  if (m.idType && ID_TYPES.indexOf(m.idType) < 0) typeOpts.push(`<option selected>${esc(m.idType)}</option>`);
+  return `<div class="mem" data-n="${m.n}" ${isNew ? 'data-new="1"' : ''} style="--c:${TAG_COLORS[i % TAG_COLORS.length]}">
+    <div class="top"><span class="tag">No.${m.n}</span><span class="ckarea">${ckArea(m, isNew)}</span></div>
+    <label>ชื่อ-นามสกุล ${locked ? '<span class="lock">🔒 เช็คอินแล้ว แก้ชื่อไม่ได้</span>' : ''}</label>
+    <input data-f="name" value="${esc(m.name)}" maxlength="150" ${locked ? 'readonly' : ''} placeholder="ชื่อ-นามสกุล">
+    ${info.hasDob ? `<label>วันเกิด</label>
+      <input type="date" data-f="dob" value="${toIso(m.dob)}" max="${todayIso()}" min="1950-01-01">` : ''}
+    ${info.hasIdType || info.hasIdNum ? `<div class="two">
+      ${info.hasIdType ? `<div><label>ประเภทบัตร</label><select data-f="idType">${typeOpts.join('')}</select></div>` : ''}
+      ${info.hasIdNum ? `<div><label>เลขบัตร</label><input data-f="idNum" value="${esc(m.idNum)}" maxlength="20" autocapitalize="characters"></div>` : ''}
+    </div>` : ''}
+    ${locked ? '' : `<button class="rm" data-rm="${m.n}" type="button">🗑 ลบสมาชิกคนนี้</button>`}
+  </div>`;
 }
 
 function membersHtml(res) {
   const ms = res.members || [];
   const done = ms.filter(m => m.checkedAt).length;
   let h = `<div class="sec" id="memSec"><div class="sec-h">
-      <h4>👥 สมาชิก <span class="cnt ${done && done === ms.length ? 'ok' : ''}">${done}/${ms.length} เช็คอิน</span></h4>
-      ${res.memberSheetFound ? '<button class="mini" id="editBtn">✏️ แก้ไข</button>' : ''}
-    </div>`;
+      <h4>👥 สมาชิก <span class="cnt ${done && done === ms.length ? 'ok' : ''}">${done}/${ms.length} เช็คอิน</span></h4></div>`;
   if (!res.memberSheetFound) return h + '<div class="empty">ไม่พบ Team ID นี้ในชีต Team Member</div></div>';
-  if (!ms.length) h += '<div class="empty">ยังไม่มีรายชื่อสมาชิก — กด ✏️ แก้ไข เพื่อเพิ่ม</div>';
-  ms.forEach((m, i) => {
-    const sub = [];
-    if (m.dob) sub.push(['วันเกิด', m.dob]);
-    if (m.idType || m.idNum) sub.push([m.idType || 'ID', maskId(m.idNum) || '-']);
-    h += `<div class="mem" style="--c:${TAG_COLORS[i % TAG_COLORS.length]}">
-      <div class="top"><span class="tag">No.${esc(m.n)}</span><span class="nm">${esc(m.name)}</span></div>
-      ${sub.length ? `<div class="sub">${sub.map(([a, b]) => `<span>${esc(a)}</span><span>${esc(b)}</span>`).join('')}</div>` : ''}
-      <div class="ckrow">
-        ${m.checkedAt
-          ? `<span class="ckdone">✅ เช็คอินแล้ว ${esc(m.checkedAt)}</span><button class="ckundo" data-undo="${m.n}">ยกเลิก</button>`
-          : `<span class="muted">ยังไม่เช็คอิน</span><button class="ckbtn" data-ck="${m.n}">✅ Check-in</button>`}
-      </div>
-    </div>`;
-  });
+  if (!ms.length) h += '<div class="empty" id="noMem">ยังไม่มีรายชื่อสมาชิก — กด ➕ เพิ่มสมาชิก</div>';
+  h += `<div id="memList">${ms.map((m, i) => memberCard(m, i, false)).join('')}</div>`;
+  h += `<button class="b b-outline" id="addMem" type="button" style="width:100%;margin-bottom:10px">➕ เพิ่มสมาชิก</button>`;
   if (ms.length > 1 && done < ms.length) {
-    h += `<button class="b b-ok" id="ckAllBtn" style="width:100%">✅ Check-in ทุกคน (${ms.length - done} คน)</button>`;
+    h += `<button class="b b-ok" id="ckAllBtn" type="button" style="width:100%">✅ Check-in ทุกคน (${ms.length - done} คน)</button>`;
   }
+  h += `<div class="savebar" id="saveBar">
+      <button class="b b-light" id="edReset" type="button">ยกเลิก</button>
+      <button class="b b-primary" id="edSave" type="button">💾 บันทึกการแก้ไข</button>
+    </div>`;
   return h + '</div>';
 }
 
+let freeSlots = [];
 function bindMemberButtons() {
-  document.querySelectorAll('[data-ck]').forEach(b => b.onclick = () => doCheckin([Number(b.dataset.ck)], true, b));
-  document.querySelectorAll('[data-undo]').forEach(b => b.onclick = () => {
-    if (confirm('ยกเลิกการเช็คอินของสมาชิก No.' + b.dataset.undo + ' ?')) doCheckin([Number(b.dataset.undo)], false, b);
+  const sec = $('memSec');
+  if (!sec) return;
+  freeSlots = ((current && current.emptySlots) || []).slice();
+  refreshAdd();
+  // ทุกการพิมพ์/เลือก → มีการแก้ไขที่ยังไม่บันทึก
+  sec.oninput = sec.onchange = e => {
+    const card = e.target.closest('.mem');
+    if (card && e.target.matches('input,select')) { card.classList.add('dirty'); markDirty(); }
+  };
+  sec.onclick = e => {
+    const t = e.target.closest('button');
+    if (!t || t.disabled) return;
+    if (t.dataset.ck) doCheckin([Number(t.dataset.ck)], true, t);
+    else if (t.dataset.undo) { if (confirm('ยกเลิกการเช็คอินของสมาชิก No.' + t.dataset.undo + ' ?')) doCheckin([Number(t.dataset.undo)], false, t); }
+    else if (t.dataset.rm) toggleRemove(t);
+    else if (t.id === 'addMem') addMember();
+    else if (t.id === 'ckAllBtn') doCheckin('all', true, t);
+    else if (t.id === 'edSave') saveMembers();
+    else if (t.id === 'edReset') { if (confirm('ยกเลิกการแก้ไขทั้งหมดที่ยังไม่บันทึก?')) { dirty = false; render(current, 'keep'); } }
+  };
+}
+
+function refreshAdd() { const a = $('addMem'); if (a) a.style.display = freeSlots.length ? '' : 'none'; }
+
+function addMember() {
+  if (!freeSlots.length) return;
+  freeSlots.sort((a, b) => a - b);
+  const n = freeSlots.shift();
+  const list = $('memList');
+  list.insertAdjacentHTML('beforeend', memberCard({ n, name: '', dob: '', idType: ID_TYPES[0] || '', idNum: '' }, list.children.length, true));
+  const card = list.lastElementChild;
+  card.classList.add('dirty');
+  if ($('noMem')) $('noMem').remove();
+  markDirty();
+  refreshAdd();
+  card.querySelector('[data-f=name]').focus();
+}
+
+function toggleRemove(btn) {
+  const card = btn.closest('.mem');
+  if (card.dataset.new) {               // ช่องใหม่ที่ยังไม่บันทึก → เอาออกเลย คืนช่องว่าง
+    freeSlots.push(Number(card.dataset.n));
+    card.remove(); refreshAdd(); markDirty();
+    return;
+  }
+  const on = !card.classList.contains('removed');
+  card.classList.toggle('removed', on);
+  card.querySelectorAll('input,select').forEach(x => x.disabled = on);
+  btn.textContent = on ? '↩ ไม่ลบ' : '🗑 ลบสมาชิกคนนี้';
+  card.classList.add('dirty');
+  markDirty();
+}
+
+function markDirty() {
+  dirty = true;
+  const bar = $('saveBar'); if (bar) bar.classList.add('show');
+}
+
+function collectMembers() {
+  const out = [], errs = [];
+  document.querySelectorAll('#memList .mem').forEach(card => {
+    const n = Number(card.dataset.n);
+    const get = f => { const el = card.querySelector(`[data-f=${f}]`); return el ? el.value.trim() : undefined; };
+    if (card.classList.contains('removed')) { out.push({ n, name: '', dob: '', idType: '', idNum: '' }); return; }
+    const m = { n, name: get('name'), dob: get('dob'), idType: get('idType'), idNum: get('idNum') };
+    if (card.dataset.new && !m.name && !m.dob && !m.idNum) return;   // ช่องใหม่ที่ไม่ได้กรอก ข้าม
+    if (!m.name) errs.push(`No.${n}: กรุณาใส่ชื่อ`);
+    out.push(m);
   });
-  const all = $('ckAllBtn'); if (all) all.onclick = () => doCheckin('all', true, all);
-  const ed = $('editBtn'); if (ed) ed.onclick = openEditor;
+  return { out, errs };
+}
+
+/** บันทึกการแก้ไขทั้งหมด (บันทึกทับข้อมูลเดิม) คืนค่า true ถ้าสำเร็จ */
+async function saveMembers(silent) {
+  const id = current.id;
+  const { out, errs } = collectMembers();
+  if (errs.length) { toast('⚠️ ' + errs[0]); return false; }
+  const removed = document.querySelectorAll('#memList .mem.removed').length;
+  if (removed && !confirm(`จะลบข้อมูลสมาชิก ${removed} คน ออกจากชีต ยืนยันหรือไม่?`)) return false;
+
+  const btn = $('edSave');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin" style="width:18px;height:18px"></span> กำลังบันทึก'; }
+  try {
+    const res = await api({ action: 'saveMembers', id, members: out });
+    if (!res || res.ok === false) throw new Error((res && res.error) || 'บันทึกไม่สำเร็จ');
+    if (!current || current.id !== id) return false;
+    dirty = false;
+    render(res, 'saved');
+    if (!silent) toast('💾 บันทึกแล้ว');
+    return true;
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 บันทึกการแก้ไข'; }
+    setStatus('bad', 'บันทึกไม่สำเร็จ', errText(err));
+    toast('❌ ' + errText(err));
+    return false;
+  }
+}
+
+function scanNext() {
+  if (dirty && !confirm('ยังไม่ได้บันทึกการแก้ไข ต้องการออกหรือไม่?')) return;
+  dirty = false;
+  $('result').style.display = 'none';
+  current = null;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (stream) resumeScan();
 }
 
 /* ---------- เช็คอินรายคน ---------- */
 async function doCheckin(members, checked, btn) {
   const id = current.id;
+  if (dirty) {                        // มีการแก้ไขค้างอยู่ → บันทึกก่อน แล้วค่อยเช็คอิน (ชื่อจะถูกล็อกหลังเช็คอิน)
+    toast('กำลังบันทึกการแก้ไขก่อนเช็คอิน…');
+    if (!(await saveMembers(true))) return;
+    btn = null;
+  }
   // แสดงผลทันที (optimistic) แล้วค่อยยืนยันจากเซิร์ฟเวอร์
   document.querySelectorAll('#memSec button').forEach(b => b.disabled = true);
   if (btn) { btn.dataset.label = btn.textContent; btn.innerHTML = '<span class="spin" style="width:18px;height:18px"></span>'; }
@@ -590,110 +737,6 @@ async function doCheckin(members, checked, btn) {
     document.querySelectorAll('#memSec button').forEach(b => b.disabled = false);
     if (btn && btn.dataset.label) btn.textContent = btn.dataset.label;
   }
-}
-
-/* ---------- แก้ไขข้อมูลสมาชิก ---------- */
-function openEditor() {
-  if (!current || !current.found) return;
-  editing = true;
-  const res = current;
-  const info = res.slotInfo || {};
-  const list = (res.members || []).map(m => Object.assign({}, m));
-  const sec = $('memSec');
-  const typeOpts = v => ['<option value="">- เลือก -</option>']
-    .concat(ID_TYPES.map(t => `<option ${t === v ? 'selected' : ''}>${esc(t)}</option>`)).join('');
-
-  const block = (m, i) => `
-    <div class="ed" data-n="${m.n}" style="--c:${TAG_COLORS[i % TAG_COLORS.length]}">
-      <span class="tag">No.${m.n}</span>
-      <button class="rm" data-rm="${m.n}" type="button">🗑 ลบคนนี้</button>
-      <label>ชื่อ-นามสกุล</label>
-      <input data-f="name" value="${esc(m.name)}" maxlength="150">
-      ${info.hasDob ? `<label>วันเกิด (วว/ดด/ปปปป)</label>
-        <input data-f="dob" value="${esc(m.dob)}" placeholder="เช่น 05/01/2012" inputmode="numeric" maxlength="10">` : ''}
-      ${info.hasIdType || info.hasIdNum ? `<div class="two">
-        ${info.hasIdType ? `<div><label>ประเภทบัตร</label><select data-f="idType">${typeOpts(m.idType)}</select></div>` : ''}
-        ${info.hasIdNum ? `<div><label>เลขบัตร</label><input data-f="idNum" value="${esc(m.idNum)}" maxlength="20" autocapitalize="characters"></div>` : ''}
-      </div>` : ''}
-    </div>`;
-
-  let free = (res.emptySlots || []).slice();
-  sec.innerHTML = `<div class="sec-h"><h4>✏️ แก้ไขข้อมูลสมาชิก</h4></div>
-    <div id="edList">${list.map(block).join('')}</div>
-    <button class="b b-outline" id="addMem" type="button" style="width:100%;margin-bottom:10px">➕ เพิ่มสมาชิก</button>
-    <div class="btns" style="margin-top:4px">
-      <button class="b b-light" id="edCancel" type="button">ยกเลิก</button>
-      <button class="b b-ok" id="edSave" type="button">💾 บันทึก</button>
-    </div>`;
-  setActions([]);
-
-  const refreshAdd = () => { $('addMem').style.display = free.length ? '' : 'none'; };
-  refreshAdd();
-  $('addMem').onclick = () => {
-    if (!free.length) return;
-    const n = free.shift();
-    const i = $('edList').children.length;
-    $('edList').insertAdjacentHTML('beforeend', block({ n, name: '', dob: '', idType: ID_TYPES[0] || '', idNum: '' }, i));
-    bindRemove();
-    refreshAdd();
-    $('edList').lastElementChild.querySelector('[data-f=name]').focus();
-  };
-  const bindRemove = () => document.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => {
-    const box = b.closest('.ed');
-    if (box.dataset.removed) { box.dataset.removed = ''; box.style.opacity = 1; b.textContent = '🗑 ลบคนนี้'; box.querySelectorAll('input,select').forEach(x => x.disabled = false); }
-    else { box.dataset.removed = '1'; box.style.opacity = .45; b.textContent = '↩ ไม่ลบ'; box.querySelectorAll('input,select').forEach(x => x.disabled = true); }
-  });
-  bindRemove();
-  $('edCancel').onclick = () => { editing = false; render(current, 'keep'); };
-  $('edSave').onclick = saveEditor;
-  sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function validDob(s) {
-  if (!s) return true;
-  const p = s.split(/[\/\-.]/);
-  return p.length === 3 && p.every(x => /^\d+$/.test(x));
-}
-
-async function saveEditor() {
-  const id = current.id;
-  const out = [];
-  const errs = [];
-  document.querySelectorAll('#edList .ed').forEach(box => {
-    const n = Number(box.dataset.n);
-    const get = f => { const el = box.querySelector(`[data-f=${f}]`); return el ? el.value.trim() : undefined; };
-    if (box.dataset.removed) { out.push({ n, name: '', dob: '', idType: '', idNum: '' }); return; }
-    const m = { n, name: get('name'), dob: get('dob'), idType: get('idType'), idNum: get('idNum') };
-    if (!m.name && (m.dob || m.idNum)) errs.push(`No.${n}: กรุณาใส่ชื่อ`);
-    if (m.dob && !validDob(m.dob)) errs.push(`No.${n}: วันเกิดใช้รูปแบบ วว/ดด/ปปปป`);
-    out.push(m);
-  });
-  if (errs.length) { toast('⚠️ ' + errs[0]); return; }
-  const removed = out.filter(m => !m.name).length;
-  if (removed && !confirm(`จะลบข้อมูลสมาชิก ${removed} คน ออกจากชีต ยืนยันหรือไม่?`)) return;
-
-  const btn = $('edSave');
-  btn.disabled = true; btn.innerHTML = '<span class="spin" style="width:18px;height:18px"></span> กำลังบันทึก';
-  try {
-    const res = await api({ action: 'saveMembers', id, members: out });
-    if (!res || res.ok === false) throw new Error((res && res.error) || 'บันทึกไม่สำเร็จ');
-    editing = false;
-    render(res, 'saved');
-    toast('💾 บันทึกแล้ว');
-  } catch (err) {
-    btn.disabled = false; btn.textContent = '💾 บันทึก';
-    setStatus('bad', 'บันทึกไม่สำเร็จ', errText(err));
-    $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-}
-
-function scanNext() {
-  if (editing && !confirm('ยังไม่ได้บันทึกการแก้ไข ต้องการออกหรือไม่?')) return;
-  editing = false;
-  $('result').style.display = 'none';
-  current = null;
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-  if (stream) resumeScan();
 }
 
 /* ---------- UI helpers ---------- */
