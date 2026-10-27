@@ -4,7 +4,7 @@
   <base target="_top">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-  <title>Registration QR Scan</title>
+  <title>Registration Checking in</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
@@ -20,6 +20,10 @@
     .wrap{max-width:560px;margin:0 auto;padding:12px 14px calc(28px + env(safe-area-inset-bottom))}
     header{display:flex;align-items:center;justify-content:space-between;margin:4px 2px 12px;gap:8px}
     header h1{font-size:1.4rem;margin:0}
+    .chip.wait{background:#fef3c7;color:#92400e}
+    .chip.off{background:#fee2e2;color:#991b1b}
+    .chip.ok{background:#dcfce7;color:#166534}
+    .pend{color:var(--warn);font-size:.8rem;font-weight:600}
     .chip{font-size:.8rem;padding:4px 12px;border-radius:99px;background:#e0e7ff;color:#3730a3;white-space:nowrap}
     .card{background:var(--card);border-radius:20px;box-shadow:0 4px 18px rgba(15,23,42,.07);padding:16px;margin-bottom:14px}
     .notice{border-radius:14px;padding:12px 14px;font-size:.95rem;margin-bottom:12px;background:#fef3c7;color:#92400e;display:none}
@@ -131,8 +135,8 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>📷 Registration QR Scan</h1>
-    <span class="chip" id="modeChip">…</span>
+    <h1>📷 Registration Checking in</h1>
+    <span style="display:flex;gap:6px"><span class="chip" id="syncChip" style="display:none;cursor:pointer"></span><span class="chip" id="modeChip">…</span></span>
   </header>
 
   <div class="notice" id="notice"></div>
@@ -212,6 +216,14 @@ let stream = null, scanning = false, busy = false, detector = null;
 let lastCode = '', lastCodeAt = 0, torchOn = false, rafId = 0, lastTick = 0, frameNo = 0;
 let current = null;          // ข้อมูลทีมที่แสดงอยู่
 let dirty = false;           // มีการแก้ไขที่ยังไม่บันทึก
+let serverData = null;   // ข้อมูลล่าสุดจากเซิร์ฟเวอร์ (ยังไม่รวมคิวในเครื่อง)
+const clone = o => JSON.parse(JSON.stringify(o));
+// คิวเช็คอินในเครื่อง (ยังไม่ส่งเข้า Google Sheet)
+const OUTBOX_KEY = 'qr_checkin_outbox_v1';
+let outbox = [];
+let storageOk = true;
+try { outbox = JSON.parse(localStorage.getItem(OUTBOX_KEY) || '[]') || []; } catch (e) { storageOk = false; outbox = []; }
+let syncing = false, syncTimer = 0, backoff = 3000, lastSyncError = '';
 let ID_TYPES = ['ID No.', 'Pass No.'];
 let PIN = '';
 try { PIN = localStorage.getItem('qr_pin') || ''; } catch (e) {}
@@ -284,6 +296,12 @@ function askPin(err) {
   $('manualInput').onkeydown = e => { if (e.key === 'Enter') $('manualBtn').click(); };
   initDetector();
   loadConfig();
+  updateSyncChip();
+  scheduleSync(1500);
+  $('syncChip').onclick = () => { backoff = 3000; scheduleSync(0); };
+  window.addEventListener('online', () => scheduleSync(0));
+  window.addEventListener('offline', updateSyncChip);
+  window.addEventListener('beforeunload', e => { if (outbox.length) { e.preventDefault(); e.returnValue = ''; } });
   document.addEventListener('visibilitychange', () => { if (document.hidden && stream) stopCamera(); });
 })();
 
@@ -489,24 +507,29 @@ async function handleCode(raw) {
   current = { id };
   const auto = $('autoChk').checked;
   showResultBox(id, '');
-  setStatus('load', auto ? 'กำลังเช็คอินทั้งทีม…' : 'กำลังดึงข้อมูลทีม…');
+  setStatus('load', 'กำลังดึงข้อมูลทีม…');
   setActions([]);
   $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   try {
-    const res = await api(auto ? { action: 'checkin', id, members: 'all', checked: true } : { action: 'lookup', id });
+    const res = await api({ action: 'lookup', id });
     if (!current || current.id !== id) return;   // มีการสแกนใหม่ระหว่างรอ
-    if (res && res.ok === false && auto && /ไม่พบทีม/.test(res.error || '')) {
-      // ไม่มีในชีต Team Member → แสดงข้อมูลทีมแทน
-      return render(await api({ action: 'lookup', id }));
+    if (auto && res && res.found && res.memberSheetFound) {
+      const view = applyPending(clone(res));
+      const left = (view.members || []).filter(m => !m.checkedAt).length;
+      if (left) enqueue({ id: res.id, members: 'all', checked: true });   // เก็บในเครื่องทันที แล้วทยอยส่ง
+      return render(res, left ? 'auto' : 'autoAlready');
     }
-    render(res, auto ? 'auto' : '');
+    render(res, '');
   } catch (err) {
     setStatus('bad', 'เชื่อมต่อไม่สำเร็จ', errText(err));
     setActions([['🔁 ลองใหม่', 'b-primary', () => handleCode(id)], ['📷 สแกนต่อ', 'b-light', scanNext]]);
   }
 }
 
+
+/** res = null → ใช้ข้อมูลเดิม (เช่น หลังกดเช็คอินในเครื่อง) */
 function render(res, mode) {
+  if (res === null) res = serverData;
   if (!res || res.ok === false) {
     setStatus('bad', 'เกิดข้อผิดพลาด', (res && res.error) || 'ไม่ทราบสาเหตุ');
     setActions([['📷 สแกนต่อ', 'b-primary full', scanNext]]);
@@ -519,15 +542,17 @@ function render(res, mode) {
     setActions([['📷 สแกนต่อ', 'b-primary full', scanNext]]);
     return;
   }
+  serverData = res;
+  res = applyPending(clone(res));     // ซ้อนรายการที่ยังรอส่งในเครื่อง
   current = res;
   dirty = false;
   showResultBox(res.id, res.teamName);
   const ms = res.members || [];
   const done = ms.filter(m => m.checkedAt).length;
-  if (mode === 'auto') {
-    if (res.already) setStatus('warn', 'ทีมนี้เช็คอินครบแล้ว', `${done}/${ms.length} คน`);
-    else setStatus('ok', 'เช็คอินทั้งทีมสำเร็จ ✓', `${done}/${ms.length} คน`);
-    if (stream) setTimeout(() => { if (current === res && !dirty) scanNext(); }, 1800);
+  if (mode === 'auto' || mode === 'autoAlready') {
+    if (mode === 'autoAlready') setStatus('warn', 'ทีมนี้เช็คอินครบแล้ว', `${done}/${ms.length} คน`);
+    else setStatus('ok', 'เช็คอินทั้งทีมแล้ว ✓', `${done}/${ms.length} คน · บันทึกในเครื่องแล้ว กำลังส่งเข้าระบบ`);
+    if (stream) setTimeout(() => { if (current === res && !dirty) scanNext(); }, 1200);
   } else if (mode === 'saved') {
     setStatus('ok', 'บันทึกข้อมูลสมาชิกแล้ว ✓', res.changed ? `แก้ไข ${res.changed} ช่อง` : 'ไม่มีข้อมูลเปลี่ยนแปลง');
   } else if (mode !== 'keep') {
@@ -568,7 +593,7 @@ function toIso(s) {
 function ckArea(m, isNew) {
   if (isNew) return '<span class="muted">บันทึกก่อน จึงเช็คอินได้</span>';
   return m.checkedAt
-    ? `<span class="ckdone">✅ ${esc(m.checkedAt)}</span> <button class="ckundo" data-undo="${m.n}" type="button">ยกเลิก</button>`
+    ? `<span class="ckdone">✅ ${esc(m.checkedAt)}${m.pending ? ' <span class="pend">⏳ รอส่ง</span>' : ''}</span> <button class="ckundo" data-undo="${m.n}" type="button">ยกเลิก</button>`
     : `<button class="ckbtn" data-ck="${m.n}" type="button">✅ Check-in</button>`;
 }
 
@@ -622,7 +647,7 @@ function bindMemberButtons() {
     else if (t.dataset.rm) toggleRemove(t);
     else if (t.id === 'ckAllBtn') doCheckin('all', true, t);
     else if (t.id === 'edSave') saveMembers();
-    else if (t.id === 'edReset') { if (confirm('ยกเลิกการแก้ไขทั้งหมดที่ยังไม่บันทึก?')) { dirty = false; render(current, 'keep'); } }
+    else if (t.id === 'edReset') { if (confirm('ยกเลิกการแก้ไขทั้งหมดที่ยังไม่บันทึก?')) { dirty = false; render(null, 'keep'); } }
   };
 }
 
@@ -692,30 +717,114 @@ function scanNext() {
 }
 
 /* ---------- เช็คอินรายคน ---------- */
-async function doCheckin(members, checked, btn) {
+/* =====================================================================
+ *  เช็คอินแบบไม่ต้องรอ: เก็บคิวในเครื่อง (localStorage) แล้วทยอยส่งเบื้องหลัง
+ * ===================================================================== */
+
+function saveOutbox() {
+  try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(outbox)); storageOk = true; }
+  catch (e) { storageOk = false; }
+  updateSyncChip();
+}
+
+function enqueue(op) {
+  op.opId = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  op.at = Date.now();                       // เวลาที่กดจริง → ใช้เป็นเวลาเช็คอินในชีต
+  outbox.push(op);
+  saveOutbox();
+  scheduleSync(0);
+}
+
+function hhmm(ms) { const d = new Date(ms); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
+
+/** นำรายการในคิวมาซ้อนบนข้อมูลทีม (ให้หน้าจอแสดงผลทันที) */
+function applyOps(res, ops, markPending) {
+  if (!res || !res.found || !res.members) return res;
+  const key = String(res.id).toUpperCase();
+  ops.filter(o => String(o.id).toUpperCase() === key).forEach(o => {
+    const targets = o.members === 'all' ? res.members.map(m => m.n) : o.members.map(Number);
+    res.members.forEach(m => {
+      if (targets.indexOf(m.n) < 0) return;
+      if (o.checked) { if (!m.checkedAt) { m.checkedAt = hhmm(o.at); if (markPending) m.pending = true; } }
+      else { m.checkedAt = ''; if (markPending) m.pending = false; }
+    });
+  });
+  return res;
+}
+function applyPending(res) { return applyOps(res, outbox, true); }
+
+/* ---------- เช็คอินรายคน (ไม่รอเซิร์ฟเวอร์) ---------- */
+async function doCheckin(members, checked) {
   const id = current.id;
-  if (dirty) {                        // มีการแก้ไขค้างอยู่ → บันทึกก่อน แล้วค่อยเช็คอิน (ชื่อจะถูกล็อกหลังเช็คอิน)
+  if (dirty) {                        // มีการแก้ไขค้างอยู่ → บันทึกก่อน (ต้องรอ) แล้วค่อยเช็คอิน
     toast('กำลังบันทึกการแก้ไขก่อนเช็คอิน…');
     if (!(await saveMembers(true))) return;
-    btn = null;
   }
-  // แสดงผลทันที (optimistic) แล้วค่อยยืนยันจากเซิร์ฟเวอร์
-  document.querySelectorAll('#memSec button').forEach(b => b.disabled = true);
-  if (btn) { btn.dataset.label = btn.textContent; btn.innerHTML = '<span class="spin" style="width:18px;height:18px"></span>'; }
+  enqueue({ id, members, checked });
+  render(null, 'keep');
+  const ms = current.members || [];
+  const done = ms.filter(m => m.checkedAt).length;
+  setStatus('ok', checked ? 'เช็คอินแล้ว ✓' : 'ยกเลิกเช็คอินแล้ว', `เช็คอิน ${done}/${ms.length} คน · บันทึกในเครื่องแล้ว กำลังส่งเข้าระบบ`);
+  toast(checked ? '✅ เช็คอินแล้ว — สแกนทีมถัดไปได้เลย' : 'ยกเลิกแล้ว');
+}
+
+/* ---------- ส่งคิวเข้า Google Sheet เบื้องหลัง ---------- */
+function scheduleSync(ms) { clearTimeout(syncTimer); syncTimer = setTimeout(syncNow, ms); }
+
+async function syncNow() {
+  if (syncing || !outbox.length) { updateSyncChip(); return; }
+  if (navigator.onLine === false) { updateSyncChip(); scheduleSync(5000); return; }
+  syncing = true; updateSyncChip();
+  const batch = outbox.slice(0, 20);
   try {
-    const res = await api({ action: 'checkin', id, members, checked });
-    if (!current || current.id !== id) return;
-    if (!res || res.ok === false) throw new Error((res && res.error) || 'บันทึกไม่สำเร็จ');
-    render(res, 'keep');
-    const ms = res.members || [];
-    const done = ms.filter(m => m.checkedAt).length;
-    setStatus('ok', checked ? 'เช็คอินแล้ว ✓' : 'ยกเลิกเช็คอินแล้ว', `เช็คอิน ${done}/${ms.length} คน`);
-    toast(checked ? 'บันทึกเช็คอินแล้ว' : 'ยกเลิกแล้ว');
+    const r = await api({ action: 'checkinBatch', ops: batch.map(o => ({ opId: o.opId, id: o.id, members: o.members, checked: o.checked, at: o.at })) });
+    if (!r || r.ok === false) throw new Error((r && r.error) || 'ส่งไม่สำเร็จ');
+    const done = {};
+    const failed = [];
+    (r.results || []).forEach(x => {
+      if (x.ok) done[x.opId] = true;
+      else if (x.permanent) { done[x.opId] = true; failed.push(x); }
+    });
+    const sent = outbox.filter(o => done[o.opId] && !failed.some(f => f.opId === o.opId));
+    outbox = outbox.filter(o => !done[o.opId]);
+    saveOutbox();
+    // ยืนยันผลลงข้อมูลทีมที่เปิดอยู่ (ไม่ต้องโหลดใหม่)
+    if (serverData && sent.length) {
+      applyOps(serverData, sent, false);
+      if (current && serverData.id === current.id && !dirty) {
+        const st = $('status').innerHTML;
+        render(null, 'keep');
+        $('status').innerHTML = st;
+      }
+    }
+    failed.forEach(f => toast('❌ ส่งไม่สำเร็จ ' + f.id + ': ' + f.error));
+    lastSyncError = '';
+    backoff = 3000;
+    if (outbox.length) scheduleSync(300);
   } catch (err) {
-    toast('❌ ' + errText(err));
-    document.querySelectorAll('#memSec button').forEach(b => b.disabled = false);
-    if (btn && btn.dataset.label) btn.textContent = btn.dataset.label;
+    lastSyncError = errText(err);
+    backoff = Math.min(backoff * 2, 60000);     // ส่งไม่ได้ → ลองใหม่ ห่างขึ้นเรื่อย ๆ (สูงสุด 1 นาที)
+    scheduleSync(backoff);
+  } finally {
+    syncing = false;
+    updateSyncChip();
   }
+}
+
+function updateSyncChip() {
+  const c = $('syncChip');
+  if (!c) return;
+  const n = outbox.length;
+  if (!storageOk) { c.style.display = ''; c.className = 'chip off'; c.textContent = '⚠️ เครื่องนี้เก็บคิวไม่ได้'; c.title = 'ห้ามปิดหน้าเว็บจนกว่าจะส่งครบ'; }
+  if (!n) {
+    if (storageOk) { c.style.display = ''; c.className = 'chip ok'; c.textContent = '✓ ส่งครบ'; c.title = ''; }
+    return;
+  }
+  c.style.display = '';
+  if (navigator.onLine === false) { c.className = 'chip off'; c.textContent = `📴 ออฟไลน์ · รอส่ง ${n}`; }
+  else if (syncing) { c.className = 'chip wait'; c.textContent = `⏫ กำลังส่ง ${n}`; }
+  else { c.className = 'chip wait'; c.textContent = `⏳ รอส่ง ${n}`; }
+  c.title = lastSyncError ? 'ล่าสุด: ' + lastSyncError + ' (แตะเพื่อส่งใหม่)' : 'แตะเพื่อส่งทันที';
 }
 
 /* ---------- UI helpers ---------- */
@@ -766,7 +875,8 @@ async function loadCheckedTeams() {
   try {
     const r = await api({ action: 'checkedTeams' });
     if (!r || r.ok === false) throw new Error((r && r.error) || 'โหลดไม่สำเร็จ');
-    $('histInfo').innerHTML = `ทั้งหมด <b>${r.total}</b> ทีม · ครบทุกคน <b>${r.complete}</b> ทีม<br><span>อัปเดต ${esc(r.time)}</span>`;
+    $('histInfo').innerHTML = `ทั้งหมด <b>${r.total}</b> ทีม · ครบทุกคน <b>${r.complete}</b> ทีม<br><span>อัปเดต ${esc(r.time)}</span>`
+      + (outbox.length ? `<br><span class="pend">⏳ เครื่องนี้ยังมี ${outbox.length} รายการรอส่ง (ยังไม่รวมในรายการนี้)</span>` : '');
     $('hist').innerHTML = r.teams.length
       ? r.teams.map(t => `<li data-id="${esc(t.id)}">
           <span><span class="tid">${esc(t.id)}</span><span class="tn">${esc(t.name)}</span></span>
