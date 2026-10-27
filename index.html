@@ -89,7 +89,8 @@
     .mem .top{justify-content:space-between}
     .mem.removed{opacity:.45}
     .mem.dirty{box-shadow:0 0 0 2px #fbbf24}
-    .lock{color:var(--warn);font-size:.8rem;margin-left:4px}
+    .lock{color:var(--warn);font-size:.85rem;margin-top:6px;font-weight:500}
+    .mem.locked input{background:#f1f5f9;color:#334155;border-style:dashed;opacity:1;-webkit-text-fill-color:#334155}
     .rm{border:0;background:none;color:var(--bad);font-size:.9rem;cursor:pointer;margin-top:8px;padding:4px 0}
     .savebar{position:sticky;bottom:calc(10px + env(safe-area-inset-bottom));display:none;grid-template-columns:1fr 2fr;gap:8px;margin-top:10px;
              background:rgba(255,255,255,.95);padding:8px;border-radius:16px;box-shadow:0 6px 24px rgba(15,23,42,.18)}
@@ -112,7 +113,13 @@
     .hist h3{font-size:1.05rem;margin:0 0 6px}
     .hist ul{list-style:none;margin:0;padding:0;font-size:.95rem}
     .hist li{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px dashed var(--line)}
-    .hist li span:last-child{color:var(--muted);white-space:nowrap}
+    .hist li{cursor:pointer;align-items:center}
+    .hist li .tid{font-weight:700}
+    .hist li .tn{color:var(--muted);font-size:.9rem;display:block}
+    .hist li .rt{text-align:right;white-space:nowrap}
+    .hist li .rt small{display:block;color:var(--muted);font-size:.8rem}
+    .pill{display:inline-block;border-radius:99px;padding:1px 10px;font-size:.85rem;font-weight:600;background:#fef3c7;color:#92400e}
+    .pill.ok{background:#dcfce7;color:#166534}
     .muted{color:var(--muted);font-size:.85rem}
     .spin{width:24px;height:24px;border:3px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sp .8s linear infinite;display:inline-block}
     @keyframes sp{to{transform:rotate(360deg)}}
@@ -162,8 +169,12 @@
   </div>
 
   <div class="card hist">
-    <h3>ประวัติการสแกน (เครื่องนี้)</h3>
-    <ul id="hist"><li class="muted">ยังไม่มี</li></ul>
+    <div class="sec-h">
+      <h3>🏁 ทีมที่ Check-in แล้ว</h3>
+      <button class="mini" id="refreshBtn" type="button">🔄 Refresh</button>
+    </div>
+    <div class="muted" id="histInfo">กด Refresh เพื่อโหลดข้อมูล</div>
+    <ul id="hist"></ul>
   </div>
   <p class="muted" style="text-align:center">v3.0</p>
 </div>
@@ -269,7 +280,6 @@ function askPin(err) {
   $('photoInput').onchange = onPhoto;
   $('manualBtn').onclick = () => { const v = $('manualInput').value.trim(); if (v) { $('manualInput').blur(); handleCode(v); } };
   $('manualInput').onkeydown = e => { if (e.key === 'Enter') $('manualBtn').click(); };
-  renderHist();
   initDetector();
   loadConfig();
   document.addEventListener('visibilitychange', () => { if (document.hidden && stream) stopCamera(); });
@@ -504,7 +514,6 @@ function render(res, mode) {
     current = res;
     showResultBox(res.id, '');
     setStatus('bad', 'ไม่พบทีม', 'ไม่มี Team ID นี้ในชีต Team Data');
-    addHist(res.id, 'ไม่พบ');
     setActions([['📷 สแกนต่อ', 'b-primary full', scanNext]]);
     return;
   }
@@ -516,13 +525,11 @@ function render(res, mode) {
   if (mode === 'auto') {
     if (res.already) setStatus('warn', 'ทีมนี้เช็คอินครบแล้ว', `${done}/${ms.length} คน`);
     else setStatus('ok', 'เช็คอินทั้งทีมสำเร็จ ✓', `${done}/${ms.length} คน`);
-    addHist(res.id, `เช็คอิน ${done}/${ms.length}`);
     if (stream) setTimeout(() => { if (current === res && !dirty) scanNext(); }, 1800);
   } else if (mode === 'saved') {
     setStatus('ok', 'บันทึกข้อมูลสมาชิกแล้ว ✓', res.changed ? `แก้ไข ${res.changed} ช่อง` : 'ไม่มีข้อมูลเปลี่ยนแปลง');
   } else if (mode !== 'keep') {
     setStatus('ok', 'พบข้อมูลทีม', `สมาชิก ${ms.length} คน · เช็คอินแล้ว ${done} คน`);
-    addHist(res.id, res.teamName || 'ดูข้อมูล');
   }
   $('resBody').innerHTML = teamHtml(res) + membersHtml(res);
   bindMemberButtons();
@@ -566,14 +573,15 @@ function ckArea(m, isNew) {
 function memberCard(m, i, isNew) {
   const info = (current && current.slotInfo) || {};
   const locked = !!m.checkedAt;
-  return `<div class="mem" data-n="${m.n}" ${isNew ? 'data-new="1"' : ''} style="--c:${TAG_COLORS[i % TAG_COLORS.length]}">
+  return `<div class="mem ${locked ? 'locked' : ''}" data-n="${m.n}" ${isNew ? 'data-new="1"' : ''} style="--c:${TAG_COLORS[i % TAG_COLORS.length]}">
     <div class="top"><span class="tag">No.${m.n}</span><span class="ckarea">${ckArea(m, isNew)}</span></div>
-    <label>ชื่อ-นามสกุล ${locked ? '<span class="lock">🔒 เช็คอินแล้ว แก้ชื่อไม่ได้</span>' : ''}</label>
+    ${locked ? '<div class="lock">🔒 เช็คอินแล้ว แก้ไขข้อมูลไม่ได้</div>' : ''}
+    <label>ชื่อ-นามสกุล</label>
     <input data-f="name" value="${esc(m.name)}" maxlength="150" ${locked ? 'readonly' : ''} placeholder="ชื่อ-นามสกุล">
     ${info.hasDob ? `<label>วันเกิด</label>
-      <input type="date" data-f="dob" value="${toIso(m.dob)}" max="${todayIso()}" min="1950-01-01">` : ''}
+      <input type="date" data-f="dob" value="${toIso(m.dob)}" max="${todayIso()}" min="1950-01-01" ${locked ? 'readonly disabled' : ''}>` : ''}
     ${info.hasIdNum ? `<label>เลขบัตร</label>
-      <input data-f="idNum" value="${esc(m.idNum)}" maxlength="20" autocapitalize="characters">` : ''}
+      <input data-f="idNum" value="${esc(m.idNum)}" maxlength="20" autocapitalize="characters" ${locked ? 'readonly' : ''}>` : ''}
     ${locked ? '' : `<button class="rm" data-rm="${m.n}" type="button">🗑 ลบสมาชิกคนนี้</button>`}
   </div>`;
 }
@@ -584,9 +592,8 @@ function membersHtml(res) {
   let h = `<div class="sec" id="memSec"><div class="sec-h">
       <h4>👥 สมาชิก <span class="cnt ${done && done === ms.length ? 'ok' : ''}">${done}/${ms.length} เช็คอิน</span></h4></div>`;
   if (!res.memberSheetFound) return h + '<div class="empty">ไม่พบ Team ID นี้ในชีต Team Member</div></div>';
-  if (!ms.length) h += '<div class="empty" id="noMem">ยังไม่มีรายชื่อสมาชิก — กด ➕ เพิ่มสมาชิก</div>';
+  if (!ms.length) h += '<div class="empty">ยังไม่มีรายชื่อสมาชิก</div>';
   h += `<div id="memList">${ms.map((m, i) => memberCard(m, i, false)).join('')}</div>`;
-  h += `<button class="b b-outline" id="addMem" type="button" style="width:100%;margin-bottom:10px">➕ เพิ่มสมาชิก</button>`;
   if (ms.length > 1 && done < ms.length) {
     h += `<button class="b b-ok" id="ckAllBtn" type="button" style="width:100%">✅ Check-in ทุกคน (${ms.length - done} คน)</button>`;
   }
@@ -597,12 +604,9 @@ function membersHtml(res) {
   return h + '</div>';
 }
 
-let freeSlots = [];
 function bindMemberButtons() {
   const sec = $('memSec');
   if (!sec) return;
-  freeSlots = ((current && current.emptySlots) || []).slice();
-  refreshAdd();
   // ทุกการพิมพ์/เลือก → มีการแก้ไขที่ยังไม่บันทึก
   sec.oninput = sec.onchange = e => {
     const card = e.target.closest('.mem');
@@ -614,36 +618,14 @@ function bindMemberButtons() {
     if (t.dataset.ck) doCheckin([Number(t.dataset.ck)], true, t);
     else if (t.dataset.undo) { if (confirm('ยกเลิกการเช็คอินของสมาชิก No.' + t.dataset.undo + ' ?')) doCheckin([Number(t.dataset.undo)], false, t); }
     else if (t.dataset.rm) toggleRemove(t);
-    else if (t.id === 'addMem') addMember();
     else if (t.id === 'ckAllBtn') doCheckin('all', true, t);
     else if (t.id === 'edSave') saveMembers();
     else if (t.id === 'edReset') { if (confirm('ยกเลิกการแก้ไขทั้งหมดที่ยังไม่บันทึก?')) { dirty = false; render(current, 'keep'); } }
   };
 }
 
-function refreshAdd() { const a = $('addMem'); if (a) a.style.display = freeSlots.length ? '' : 'none'; }
-
-function addMember() {
-  if (!freeSlots.length) return;
-  freeSlots.sort((a, b) => a - b);
-  const n = freeSlots.shift();
-  const list = $('memList');
-  list.insertAdjacentHTML('beforeend', memberCard({ n, name: '', dob: '', idNum: '' }, list.children.length, true));
-  const card = list.lastElementChild;
-  card.classList.add('dirty');
-  if ($('noMem')) $('noMem').remove();
-  markDirty();
-  refreshAdd();
-  card.querySelector('[data-f=name]').focus();
-}
-
 function toggleRemove(btn) {
   const card = btn.closest('.mem');
-  if (card.dataset.new) {               // ช่องใหม่ที่ยังไม่บันทึก → เอาออกเลย คืนช่องว่าง
-    freeSlots.push(Number(card.dataset.n));
-    card.remove(); refreshAdd(); markDirty();
-    return;
-  }
   const on = !card.classList.contains('removed');
   card.classList.toggle('removed', on);
   card.querySelectorAll('input,select').forEach(x => x.disabled = on);
@@ -662,6 +644,7 @@ function collectMembers() {
   document.querySelectorAll('#memList .mem').forEach(card => {
     const n = Number(card.dataset.n);
     const get = f => { const el = card.querySelector(`[data-f=${f}]`); return el ? el.value.trim() : undefined; };
+    if (card.classList.contains('locked')) return;     // เช็คอินแล้ว ไม่ส่งแก้ไข
     if (card.classList.contains('removed')) { out.push({ n, name: '', dob: '', idType: '', idNum: '' }); return; }
     const m = { n, name: get('name'), dob: get('dob'), idNum: get('idNum') };   // ไม่ส่งประเภทบัตร = ไม่แก้ค่าเดิมในชีต
     if (card.dataset.new && !m.name && !m.dob && !m.idNum) return;   // ช่องใหม่ที่ไม่ได้กรอก ข้าม
@@ -725,7 +708,6 @@ async function doCheckin(members, checked, btn) {
     const ms = res.members || [];
     const done = ms.filter(m => m.checkedAt).length;
     setStatus('ok', checked ? 'เช็คอินแล้ว ✓' : 'ยกเลิกเช็คอินแล้ว', `เช็คอิน ${done}/${ms.length} คน`);
-    if (checked) addHist(id, `เช็คอิน ${done}/${ms.length}`);
     toast(checked ? 'บันทึกเช็คอินแล้ว' : 'ยกเลิกแล้ว');
   } catch (err) {
     toast('❌ ' + errText(err));
@@ -775,22 +757,35 @@ function feedback() {
   } catch (e) {}
 }
 
-function addHist(id, label) {
-  let h = [];
-  try { h = JSON.parse(localStorage.getItem('qr_hist') || '[]'); } catch (e) {}
-  const t = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  h.unshift({ id, label, t });
-  h = h.slice(0, 15);
-  try { localStorage.setItem('qr_hist', JSON.stringify(h)); } catch (e) {}
-  renderHist(h);
+/* ---------- ทีมที่ Check-in แล้ว (โหลดใหม่เมื่อกด Refresh) ---------- */
+async function loadCheckedTeams() {
+  const btn = $('refreshBtn');
+  btn.disabled = true; btn.textContent = '⏳ กำลังโหลด';
+  try {
+    const r = await api({ action: 'checkedTeams' });
+    if (!r || r.ok === false) throw new Error((r && r.error) || 'โหลดไม่สำเร็จ');
+    $('histInfo').innerHTML = `ทั้งหมด <b>${r.total}</b> ทีม · ครบทุกคน <b>${r.complete}</b> ทีม<br><span>อัปเดต ${esc(r.time)}</span>`;
+    $('hist').innerHTML = r.teams.length
+      ? r.teams.map(t => `<li data-id="${esc(t.id)}">
+          <span><span class="tid">${esc(t.id)}</span><span class="tn">${esc(t.name)}</span></span>
+          <span class="rt"><span class="pill ${t.done >= t.total ? 'ok' : ''}">${t.done}/${t.total}</span><small>${esc(t.time)}</small></span>
+        </li>`).join('')
+      : '<li class="muted">ยังไม่มีทีมที่ Check-in</li>';
+  } catch (err) {
+    toast('❌ ' + errText(err));
+  } finally {
+    btn.disabled = false; btn.textContent = '🔄 Refresh';
+  }
 }
 
-function renderHist(h) {
-  if (!h) { try { h = JSON.parse(localStorage.getItem('qr_hist') || '[]'); } catch (e) { h = []; } }
-  $('hist').innerHTML = h.length
-    ? h.map(x => `<li><span><b>${esc(x.id)}</b> · ${esc(x.label)}</span><span>${esc(x.t)}</span></li>`).join('')
-    : '<li class="muted">ยังไม่มี</li>';
-}
+$('refreshBtn').onclick = loadCheckedTeams;
+$('hist').onclick = e => {
+  const li = e.target.closest('li[data-id]');
+  if (!li) return;
+  if (dirty && !confirm('ยังไม่ได้บันทึกการแก้ไข ต้องการทิ้งแล้วเปิดทีมนี้หรือไม่?')) return;
+  dirty = false;
+  handleCode(li.dataset.id);
+};
 </script>
 </body>
 </html>
